@@ -62,8 +62,8 @@ Feedback format: `g` = green, `y` = yellow, `b` = black/gray
 
 | File | Description |
 |------|-------------|
-| `/src/solver_benchmark.py` | Automated benchmark across all 2,315 words |
-| `/src/solver_interactive.py` | Interactive solver with suggestions |
+| `/src/Solver_Benchmark.py` | Automated benchmark across all 2,315 words |
+| `/src/Solver_Interactive.py` | Interactive solver with suggestions |
 | `/data/wordlist_orig_hidden` | 2,315 answer words (from original Wordle source) |
 | `/data/wordlist_orig_all` | 12,972 valid guesses |
 
