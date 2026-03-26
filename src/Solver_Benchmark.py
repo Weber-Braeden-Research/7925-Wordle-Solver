@@ -8,7 +8,6 @@ import numpy as np
 from collections import defaultdict
 from typing import List, Optional, Tuple
 
-# ── Constants ──────────────────────────────────────────────────
 GRAY, YELLOW, GREEN = 0, 1, 2
 ALL_GREEN = 242
 PERFECT_DIFF_GATE = 20
@@ -70,8 +69,6 @@ class WordleSolver:
         self.ans_rows = np.array([self.gue_idx[w] for w in answers], dtype=np.int32)
         self.all_rows = np.arange(self.G, dtype=np.int32)
         self.opener = self.gue_idx[OPENER]
-
-        # Benchmark tracking
         self.cluster_check_count = 0
         self.cluster_check_states = set()
         self.decision_count = 0
@@ -131,7 +128,6 @@ class WordleSolver:
         return None
 
     def _dangerous_cluster(self, R, min_sz=3) -> int:
-        # Track this call
         state_key = tuple(sorted(R.tolist()))
         self.cluster_check_count += 1
         self.cluster_check_states.add(state_key)
@@ -204,7 +200,6 @@ class WordleSolver:
             return self._pick_second(R)
 
     def solve(self, target_idx: int) -> Tuple[int, List[str]]:
-        """Solve for a single target word. Returns (num_guesses, path)."""
         R = np.arange(self.A, dtype=np.int32)
         target = self.answers[target_idx]
         target_row = self.ans_rows[target_idx]
@@ -232,8 +227,6 @@ class WordleSolver:
 
 
 def run_benchmark(solver: WordleSolver) -> dict:
-    """Run full benchmark across all 2,315 words."""
-
     solver.reset_stats()
 
     total_guesses = 0
@@ -274,7 +267,6 @@ def main():
     print("  WORDLE SOLVER BENCHMARK")
     print("=" * 60)
 
-    # Load words
     print("\nLoading word lists …")
     t_load_start = time.time()
     answers = load_words("data/wordlist_orig_hidden")
@@ -282,18 +274,14 @@ def main():
     t_load = time.time() - t_load_start
     print(f"  {len(answers)} answers · {len(guesses)} guesses ({t_load:.2f}s)")
 
-    # Build matrix
     print("\nBuilding pattern matrix …")
     matrix, t_matrix = build_pattern_matrix(guesses, answers)
 
-    # Create solver
     solver = WordleSolver(answers, guesses, matrix)
 
-    # Run benchmark
     print("\nRunning benchmark across all words …")
     results = run_benchmark(solver)
 
-    # Report results
     print("\n" + "=" * 60)
     print("  RESULTS")
     print("=" * 60)
@@ -323,7 +311,6 @@ def main():
     print(f"    Cluster checks (total):       {results['cluster_checks_total']}")
     print(f"    Cluster checks (unique):      {results['cluster_checks_unique']}")
 
-    # Verification
     print("\n" + "=" * 60)
     print("  VERIFICATION")
     print("=" * 60)

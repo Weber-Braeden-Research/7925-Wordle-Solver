@@ -20,7 +20,6 @@ import numpy as np
 from collections import defaultdict
 from typing import List, Optional
 
-# ── Constants ──────────────────────────────────────────────────
 GRAY, YELLOW, GREEN = 0, 1, 2
 ALL_GREEN = 242
 PERFECT_DIFF_GATE = 20
@@ -47,7 +46,6 @@ def int_to_feedback(val: int) -> str:
     return ''.join(out)
 
 
-# ── Pattern matrix ─────────────────────────────────────────────
 def build_pattern_matrix(guesses: List[str], answers: List[str]) -> np.ndarray:
     G, A = len(guesses), len(answers)
     print(f"  Building {G}×{A} pattern matrix … ", end="", flush=True)
@@ -84,7 +82,6 @@ def build_pattern_matrix(guesses: List[str], answers: List[str]) -> np.ndarray:
     return mat
 
 
-# ── Solver ─────────────────────────────────────────────────────
 class WordleSolver:
     def __init__(self, answers, guesses, matrix):
         self.answers  = answers
@@ -134,12 +131,10 @@ class WordleSolver:
         n = len(R)
         if n > PERFECT_DIFF_GATE:
             return None
-        # Prefer answer words first
         ar = self.ans_rows[R]
         nb = self._num_buckets(ar, R)
         if (nb == n).any():
             return int(ar[np.argmax(nb == n)])
-        # Then any guess
         nb = self._num_buckets(self.all_rows, R)
         if (nb == n).any():
             return int(self.all_rows[np.argmax(nb == n)])
@@ -165,7 +160,6 @@ class WordleSolver:
         top  = self._top_bucket_rows(R)
         rset = set(self.ans_rows[R].tolist())
 
-        # Score ALL top-bucket candidates
         scored = []
         for r in top:
             r = int(r)
@@ -174,7 +168,6 @@ class WordleSolver:
             scored.append((k, r, m))
         scored.sort(key=lambda x: x[0])
 
-        # Determine actual pick: best answer word if any, else best overall
         pick = None
         for k, r, m in scored:
             if r in rset:
@@ -192,7 +185,6 @@ class WordleSolver:
         top  = self._top_bucket_rows(R)
         rset = set(self.ans_rows[R].tolist())
 
-        # Score ALL top-bucket candidates
         scored = []
         for r in top:
             r = int(r)
@@ -202,7 +194,6 @@ class WordleSolver:
             scored.append((k, r, m))
         scored.sort(key=lambda x: x[0])
 
-        # Determine actual pick: best answer word if any, else best overall
         pick = None
         for k, r, m in scored:
             if r in rset:
@@ -219,7 +210,6 @@ class WordleSolver:
     def _show_candidates(self, scored, rset, class_name, pick):
         n_show = min(TOP_N_SHOW, len(scored))
 
-        # Find where the pick ranks
         pick_rank = None
         for i, (_, r, _) in enumerate(scored):
             if r == pick:
@@ -247,7 +237,6 @@ class WordleSolver:
                   f"  {m['buckets']:>4}  {m['worst']:>5}  {m['second_worst']:>5}"
                   f"  {m['expected']:>8.3f}{marker}")
 
-        # If pick isn't shown, display it
         if pick_rank and pick_rank > n_show:
             print(f"  │  ...")
             pick_data = scored[pick_rank - 1]
@@ -292,7 +281,6 @@ class WordleSolver:
         return self.gue_idx.get(word.lower())
 
 
-# ── Interactive game loop ──────────────────────────────────────
 def play(solver: WordleSolver):
     R = np.arange(solver.A, dtype=np.int32)
     turn = 0
@@ -382,7 +370,6 @@ def play(solver: WordleSolver):
         print(f"  (chose in {elapsed:.2f}s)")
 
 
-# ── Main ───────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("Loading word lists …")
     answers = load_words("data/wordlist_orig_hidden")
