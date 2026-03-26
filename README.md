@@ -81,14 +81,28 @@ Both word lists originate from the original Wordle source code as archived by [S
 
 ## Citation
 
-```bibtex
-@article{weber2026wordle,
-  title={Near-Optimal Wordle Without Search: Pattern-Count Maximization, 
-         Variable Hierarchy, and the Limits of Greedy Play},
-  author={Weber, Braeden},
-  year={2026}
-}
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19229223.svg)](https://doi.org/10.5281/zenodo.19229223)
+If you use this work, please cite:
+
+**Paper:**
 ```
+Weber, B. (2026). Near-Optimal Wordle Without Search: Pattern-Count 
+Maximization, Variable Hierarchy, and the Limits of Greedy Play. 
+Zenodo. https://doi.org/10.5281/zenodo.14229223
+```
+
+**BibTeX:**
+```bibtex
+@misc{weber2025wordle,
+  author    = {Weber, Braeden},
+  title     = {Near-Optimal Wordle Without Search: Pattern-Count 
+               Maximization, Variable Hierarchy, and the 
+               Limits of Greedy Play},
+  year      = {2026},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.14229223},
+  url       = {https://doi.org/10.5281/zenodo.14229223}
+}
 
 ## License
 
