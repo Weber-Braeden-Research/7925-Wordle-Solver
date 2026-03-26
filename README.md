@@ -26,8 +26,6 @@ A greedy Wordle solver achieving **7,925 total guesses** across all 2,315 words 
    - If |R| ≤ 17 and no dangerous suffix cluster exists: minimize expected bucket size
    - Otherwise: minimize second-largest bucket size
 
-The complete algorithm fits in four sentences and runs in under a minute.
-
 ## Comparison
 
 | Solver | Total | Gap | Method |
