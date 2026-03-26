@@ -1,0 +1,1115 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{definition}{Definition}
+\newtheorem{observation}{Observation}
+
+\title{Near-Optimal Wordle Without Search:\\
+	Pattern-Count Maximization, Variable Hierarchy,\\
+	and the Limits of Greedy Play}
+
+\author{Braeden Weber\\
+\texttt{BraedenWeber@protonmail.com}\\
+Independent Researcher\\
+Code: \url{https://github.com/Weber-Braeden-Research/7925-Wordle-Solver}}
+
+\begin{document}
+	\maketitle
+	
+	\begin{abstract}
+		We systematically explore the space of greedy heuristics for Wordle, the combinatorial word-guessing game.  Starting from pattern-count maximization with answer-set preference, achieving 7,930 total guesses across 2,315 games, we discover that the tiebreaker space has specific low-dimensional structure.  A variable hierarchy analysis reveals that dozens of natural partition-shape metrics collapse into two latent families, while answer-set membership operates on a nearly orthogonal axis.  Exploiting this structure, we construct an adaptive tiebreaker achieving 7,925 total guesses (average 3.4233), only 5 above the provably optimal 7,920 of Selby [2022], using no lookahead, no entropy, and no search.
+		
+		Exact dynamic programming restricted to the pattern-count candidate class achieves 7,921 (+1 from optimal), proving that the scoring rule identifies the correct candidate pool.  The entire 4-guess gap between heuristic and DP optimum is concentrated in exactly two early-game states, arising from two distinct mechanisms.  The residual 1-guess gap requires anti-greedy sacrifice.  Every tested modification to the global stationary scoring architecture---lookahead, Shannon entropy, depth-conditioned switching, generalized cluster detection---degrades performance.  The English answer set exhibits high self-differentiation capacity (0.899 average ratio), quantifying why greedy play succeeds.
+	\end{abstract}
+	
+	%==============================================================================
+	\section{Introduction}
+	%==============================================================================
+	
+	Wordle, created by Josh Wardle and later acquired by the New York Times \cite{wardle2021}, asks a player to identify a hidden five-letter word within six guesses.  After each guess, structured ternary feedback---green, yellow, gray---indicates which letters are correct, misplaced, or absent.  The game is a linguistic variant of Mastermind \cite{knuth1977}, with guesses and answers constrained to English words.
+	
+	With $|A| = 2{,}315$ possible answers and $|G| = 12{,}972$ valid guesses, each guess partitions the candidate space into at most $3^5 = 243$ buckets (groups of answers producing identical feedback). Selby \cite{selby2022} constructed a provably optimal decision tree achieving 7,920 total guesses (average 3.4212) with opener \texttt{SALET}, confirmed by Olson \cite{olson2022}.  Sanderson \cite{sanderson2022b} developed an entropy-based solver achieving approximately 7,948 total guesses using Shannon entropy, depth-2 lookahead, word-frequency priors, and expected-score regression.
+	
+	This paper asks: how close can a greedy heuristic---one that makes locally optimal decisions without any forward planning---come to the provably optimal solution?  And what is the structure of the greedy heuristic space?
+	
+	Our answer is organized around three results:
+	
+	\begin{enumerate}
+		\item \textbf{The heuristic staircase} (Sections~3--6).  Starting from the simplest greedy solver (7,930 total, 10 above optimal), we systematically explore the tiebreaker space and discover a clean progression: $7{,}930 \to 7{,}929 \to 7{,}928 \to 7{,}927 \to 7{,}926 \to 7{,}925$, with each step explained by a single identified mechanism.  The exploration is guided by a \emph{variable hierarchy} (Section~5): dozens of natural metrics collapse into two latent partition-shape families, and the independent dimension (second-largest bucket) provides the actionable margin.
+		
+		\item \textbf{The restricted-search bound and localized gap} (Section~7).  Exact dynamic programming over the same candidate class used by the greedy heuristic achieves 7,921 total guesses (+1 from optimal).  This establishes that pattern-count maximization identifies the correct pool of candidate guesses.  The greedy heuristic's 4-guess deficit (7,925 to 7,921) is concentrated in exactly two early-game states---one involving a solvability/stubbornness tradeoff at $|R| = 221$, the other a singleton-yield effect at $|R| = 42$.  The final 1-guess gap requires choosing a guess with fewer buckets for downstream strategic advantage.
+		
+		\item \textbf{Structural analysis} (Sections~4 and~8).  We prove a score saturation theorem explaining why lookahead fails, demonstrate that entropy is specifically harmful in the clustered tiebreaking regime while neutral in the clean regime, show that the regime split already captures the full depth structure of the game tree, compute partition ceilings for all major morphological clusters, and measure the self-differentiation capacity of the English answer set (0.899 average ratio).
+	\end{enumerate}
+	
+	%==============================================================================
+	\section{Preliminaries}
+	%==============================================================================
+	
+	\begin{definition}[Wordle Instance]
+		A Wordle instance consists of an alphabet $\Sigma = \{a,\ldots,z\}$, an answer set $A \subset \Sigma^5$ with $|A| = 2{,}315$, a guess set $G \subset \Sigma^5$ with $A \subset G$ and $|G| = 12{,}972$, and a turn limit of~6.  A hidden target $t \in A$ is selected uniformly.  The player makes sequential guesses $g_i \in G$, receiving feedback $\pi(g_i, t)$ after each.
+	\end{definition}
+	
+	Both word lists originate from the game's source code as archived by Selby \cite{selby2022}.\footnote{Selby's result of 3.4201 reported elsewhere uses a later 2,309-word NYT list; the original list yields 3.4212.}
+	
+	\begin{definition}[Pattern Function]
+		For guess $g = (g_1,\ldots,g_5)$ and answer $a = (a_1,\ldots,a_5)$, the pattern $\pi(g,a) \in \{0,1,2\}^5$ is computed by:
+		\begin{enumerate}
+			\item Initialize $p_i = 0$; mark all positions of $a$ unconsumed.
+			\item \textbf{Green pass:} If $g_i = a_i$, set $p_i = 2$, consume position~$i$.
+			\item \textbf{Yellow pass:} For each $i$ with $p_i \neq 2$: if $g_i = a_j$ for some unconsumed~$j$, set $p_i = 1$, consume the leftmost such~$j$.
+		\end{enumerate}
+		Patterns are encoded as $\sum_{i=1}^{5} p_i \cdot 3^{5-i}$.
+	\end{definition}
+	
+	\begin{definition}[Partition and Bucket Profile]
+		For $g \in G$ and candidate set $R \subseteq A$, the partition of $R$ under $g$ consists of buckets $B_p = \{r \in R : \pi(g,r) = p\}$.  The bucket profile $b(g,R) = (b_1, b_2, \ldots)$ lists non-empty bucket sizes in decreasing order.
+	\end{definition}
+	
+	\begin{definition}[Key Metrics]\leavevmode
+		\begin{align}
+			S(g,R) &= |\{p : B_p \neq \emptyset\}| & \text{(pattern count)} \label{eq:S}\\
+			E(g,R) &= \textstyle\sum_i b_i^2 \,/\, |R| & \text{(expected bucket size)} \label{eq:E}\\
+			H(g,R) &= -\textstyle\sum_p (|B_p|/|R|)\log_2(|B_p|/|R|) & \text{(Shannon entropy \cite{shannon1948})} \label{eq:H}
+		\end{align}
+	\end{definition}
+	
+	Pattern count $S$ equals $2^{H_0}$ where $H_0$ is zeroth-order R\'enyi entropy \cite{renyi1961}.  Shannon entropy is $H_1$ in the same family.  Pattern count rewards the \emph{number} of distinguished outcomes; Shannon entropy additionally penalizes imbalanced buckets.  A guess is a \emph{perfect differentiator} for $R$ if $S(g,R) = |R|$.
+	
+	%==============================================================================
+	\section{The Greedy Framework}
+	%==============================================================================
+	
+	Every solver in this paper shares a common architecture with three layers: a primary scoring rule, an answer-set preference, and a partition-shape tiebreaker.  The solvers differ only in the third layer.
+	
+	%----------------------------------------------------------------------
+	\subsection{Layer 1: Pattern-Count Maximization}
+	%----------------------------------------------------------------------
+	
+	At each state $R$, the solver restricts attention to the \emph{top-bucket class}---all guesses that produce the maximum number of distinct feedback patterns:
+	\begin{equation}\label{eq:topbucket}
+		\mathcal{T}(R) = \{g \in G : S(g,R) = S^*(R)\}, \quad S^*(R) = \max_{g \in G} S(g,R).
+	\end{equation}
+	All subsequent decisions operate within $\mathcal{T}(R)$.
+	
+	Additionally, if $|R| \leq 20$ and a perfect differentiator exists in $G$, it is played immediately (preferring one from~$R$).
+	
+	%----------------------------------------------------------------------
+	\subsection{Layer 2: Answer-Set Preference}
+	%----------------------------------------------------------------------
+	
+	Among candidates in $\mathcal{T}(R)$, those drawn from $R$ are preferred over those in $G \setminus R$.
+	
+	\begin{proposition}\label{prop:rpref}
+		Let $g_{\mathrm{int}} \in R$ and $g_{\mathrm{ext}} \in G \setminus R$ induce identical partitions on~$R$.  Then $\mathbb{E}[\mathrm{cost} \mid g_{\mathrm{int}}] < \mathbb{E}[\mathrm{cost} \mid g_{\mathrm{ext}}]$.
+	\end{proposition}
+	
+	\begin{proof}
+		When $g_{\mathrm{int}}$ is played, $t = g_{\mathrm{int}}$ with probability $1/|R|$, yielding immediate solution.  With probability $(|R|-1)/|R|$, the resulting partition is identical.  Let $C > 0$ denote the expected future cost conditional on not immediately solving:
+		\begin{equation}
+			\mathbb{E}[\mathrm{cost} \mid g_{\mathrm{int}}] = \frac{1}{|R|}\cdot 0 + \frac{|R|-1}{|R|}\cdot C < C = \mathbb{E}[\mathrm{cost} \mid g_{\mathrm{ext}}]. \qedhere
+		\end{equation}
+	\end{proof}
+	
+	This preference is effective because the English answer set has high \emph{self-differentiation capacity}.  We measured, across 3,692 game states encountered during play, the ratio $\max_{g \in R} S(g,R) / S^*(R)$.
+	
+	\begin{table}[h]
+		\centering
+		\caption{Self-differentiation of the answer set.}
+		\label{tab:selfdiff}
+		\begin{tabular}{@{}lr@{}}
+			\toprule
+			Average ratio & 0.899 \\
+			Median ratio & 0.938 \\
+			States where ratio $= 1.0$ & 1,714 (46.4\%) \\
+			States where ratio $\geq 0.90$ & 2,052 (55.6\%) \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	In nearly half of all game states, a word from $R$ produces as many distinct patterns as the best word in the entire dictionary.  The cost of guessing from~$R$ (slightly worse partition quality) is typically small; the benefit ($1/|R|$ instant-solve probability) is large.  This is an empirical property of the English answer set, not an inevitable feature of any word list.
+	
+	\paragraph{The R-preference dominates the framework.}
+	Ablating it from the simplest solver (pattern count only, no tiebreaker refinements) costs 386~guesses ($8{,}316 \to 7{,}930$)---98.7\% of the total 391-guess improvement between the weakest and strongest greedy solver.  Within the refined 7,925 architecture, the marginal cost drops to 13~guesses ($7{,}925 \to 7{,}938$), as the tiebreaker refinements partially substitute for R-preference by independently discovering answer-set-favorable partition shapes.
+	
+	The 386~figure measures the R-preference's contribution from the simplest possible baseline; the 13-guess figure measures its marginal contribution when the surrounding architecture is already refined.  Both are accurate---they use different comparison baselines.  The large gap between them reflects that the adaptive tiebreaker partially recovers the partition-quality benefits that R-preference provides.
+	
+	\paragraph{The R-preference is essentially free.}
+	A natural concern is whether preferring $R$-candidates sacrifices meaningful partition quality.  We tested 32 conditional suspension policies: suspend R-preference when the expected-size gap $E_{\text{best\_R}} - E_{\text{best\_all}}$ exceeds thresholds from 0.5 to~10.0, when $b_2$ differs by more than 1 to~5, or under combined $|R|$+gap conditions.  Every suspension produced identical results: 7,925 total, zero word-level differences.  Within the 7,925 architecture, the best $R$-candidate in $\mathcal{T}(R)$ is never meaningfully worse than the best overall candidate.
+	
+	\begin{table}[h]
+		\centering
+		\caption{R-preference ablation by $|R|$ threshold.  ``Off when $|R| > k$'' disables R-preference for large candidate sets.}
+		\label{tab:rpref_ablation}
+		\begin{tabular}{@{}lcc@{}}
+			\toprule
+			Configuration & Total & $\Delta$ \\
+			\midrule
+			Baseline (always on) & 7,925 & --- \\
+			Off when $|R| > 100$ & 7,925 & 0 \\
+			Off when $|R| > 50$ & 7,929 & $+4$ \\
+			Off when $|R| > 20$ & 7,929 & $+4$ \\
+			Off when $|R| > 10$ & 7,932 & $+7$ \\
+			Fully off & 7,938 & $+13$ \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	The R-preference becomes consequential only when $|R| \leq 50$---at small candidate sets where the $1/|R|$ instant-solve probability is non-negligible.  For $|R| > 100$, disabling it changes nothing.
+	
+	%----------------------------------------------------------------------
+	\subsection{Layer 3: Partition-Shape Tiebreaker}
+	%----------------------------------------------------------------------
+	
+	After Layers~1 and~2, ties among candidates in $\mathcal{T}(R)$ with the same $R$-membership status are resolved by a cascade of partition-shape metrics applied to the bucket profile $b(g,R) = (b_1, b_2, \ldots)$.  The choice of cascade defines the solver variant.
+	
+	The specific cascades are introduced as the staircase motivates them (Section~\ref{sec:cascade}).
+	
+	%----------------------------------------------------------------------
+	\subsection{The Baseline Solver (7,930)}
+	%----------------------------------------------------------------------
+	
+	The simplest variant resolves ties by minimizing the worst-case bucket~$b_1$:
+	
+	\begin{algorithm}[h]
+		\caption{Baseline Solver (7,930)}
+		\label{alg:baseline}
+		\begin{algorithmic}[1]
+			\Require Answer set $A$, guess set $G$, target $t \in A$
+			\State $R \gets A$;\; $g \gets \texttt{SALET}$
+			\Loop
+			\State Observe $\pi(g,t)$;\; $R \gets \{r \in R : \pi(g,r) = \pi(g,t)\}$
+			\If{$|R| \leq 1$} guess $R$ and \Return \EndIf
+			\If{$|R| \leq 20$ and $\exists$ perfect differentiator $d \in G$}
+			\State $g \gets d$ \Comment{prefer $d \in R$}
+			\Else
+			\State $g \gets \arg\max_{g'} S(g', R)$ \Comment{tiebreak: prefer $g' \in R$, then $\min b_1$}
+			\EndIf
+			\EndLoop
+		\end{algorithmic}
+	\end{algorithm}
+	
+	This solver achieves 7,930 total guesses (average 3.4255) with zero failures, 10~guesses above optimal.  The question driving the rest of this paper is: can the tiebreaker be improved, and if so, what structure governs the improvement?
+	
+	%==============================================================================
+	\section{Why Complexity Fails}
+	\label{sec:complexity}
+	%==============================================================================
+	
+	Before exploring the tiebreaker space, we establish a systematic negative result: every standard approach to improving greedy search---lookahead, entropy scoring, cluster-aware heuristics---either fails or actively degrades performance when applied as a global modification to the stationary scoring architecture.  As Section~\ref{sec:localized} shows, the only successful improvements beyond the 7,925 staircase are targeted early-state specializations operating at specific game states.
+	
+	%----------------------------------------------------------------------
+	\subsection{Shannon Entropy vs.\ Pattern Count}
+	%----------------------------------------------------------------------
+	
+	Replacing pattern-count maximization with Shannon entropy throughout the baseline:
+	
+	\begin{table}[h]
+		\centering
+		\caption{Scoring function comparison.}
+		\label{tab:scoring}
+		\begin{tabular}{@{}lccc@{}}
+			\toprule
+			Scoring & Total & $\Delta$ & 6+ \\
+			\midrule
+			Pattern count ($H_0$) & 7,930 & --- & 2 \\
+			Shannon entropy ($H_1$) & 7,947 & $+17$ & 2 \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	The explanation emerges from the variable hierarchy analysis (Section~\ref{sec:hierarchy}): entropy and pattern count belong to the same metric cluster ($\rho = 0.93$).  But the failure is not simply redundancy---it is regime-specific.
+	
+	Entropy also fails as a tiebreaker \emph{within} $\mathcal{T}(R)$.  Using entropy instead of expected bucket size to resolve ties among top-bucket candidates yields 7,929 without the regime split and 7,925 with the regime split ($+0$).  A detailed analysis of the 884 tiebreak decisions in the 7,925 architecture reveals the mechanism: entropy disagrees with expected bucket size at 141 decision points (16.0\%), but 135 of these (a 20.5\% disagreement rate) occur in the clustered regime, where entropy prefers more balanced partitions that sacrifice the actionable margin~$b_2$.  Only 6 disagreements (2.7\%) occur in the clean regime.  With the regime split active, entropy and expected-size tiebreaking produce identical totals, differing on only one word (\texttt{patsy} $\leftrightarrow$ \texttt{pasty}).  The regime split absorbs entropy's useful signal perfectly.
+	
+	In short, entropy is not just ``redundant with pattern count.''  It is specifically harmful in the clustered regime---where balanced-partition preferences conflict with $b_2$ minimization---and nearly invisible in the clean regime.
+	
+	%----------------------------------------------------------------------
+	\subsection{Lookahead at Every Depth}
+	%----------------------------------------------------------------------
+	
+	We tested lookahead scoring---counting how many words become solvable within one or two additional turns---under both constrained ($F = R$) and unrestricted ($F = G$) search scopes.
+	
+	\begin{table}[h]
+		\centering
+		\caption{Effect of lookahead.  All results relative to 7,930 baseline.}
+		\label{tab:lookahead}
+		\begin{tabular}{@{}lccc@{}}
+			\toprule
+			Architecture & Total & $\Delta$ & Source \\
+			\midrule
+			No lookahead & 7,930 & --- & --- \\
+			Constrained depth-1 & 7,934 & $+4$ & controlled \\
+			Unrestricted depth-1 & 7,946 & $+16$ & separate \\
+			Constrained depth-2 & 7,950 & $+20$ & controlled \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	Every form of lookahead degrades performance.  Deeper search amplifies the degradation.\footnote{A separate depth-2 implementation yielded 7,941 ($+11$).  The direction is consistent across implementations.}
+	
+	%----------------------------------------------------------------------
+	\subsection{Score Saturation}
+	%----------------------------------------------------------------------
+	
+	The failure of lookahead admits a formal explanation.
+	
+	\begin{definition}
+		Given $R$ and bucket $B_p \subseteq R$, define $B_p$ as \emph{solvable-next-turn} w.r.t.\ scope~$F$ if $|B_p| = 1$ or $\exists d \in F$ with $S(d, B_p) = |B_p|$.  The lookahead score is $L(g,R,F) = \sum_p |B_p| \cdot \mathbf{1}[B_p\ \text{solvable-next-turn}]$.
+	\end{definition}
+	
+	\begin{theorem}[Score Saturation]\label{thm:saturation}
+		Let $R$ be a 1-DOF cluster of size $k \leq 10$ (words identical except at one position).  Suppose every $(k{-}1)$-subset of~$R$ has a perfect differentiator in~$G$.  Under unrestricted search ($F = G$), $L(g,R,G) = k$ for every $g \in R$ and every external guess producing $k$~singletons.  The scoring function is constant; the lookahead provides no discriminative information.
+	\end{theorem}
+	
+	\begin{proof}[Proof sketch]
+		Any $g_i \in R$ partitions $R$ into $\{g_i\}$ (all-green, contributing~1) and $R \setminus \{g_i\}$ (a single bucket of size $k-1$, since all remaining words produce identical patterns against~$g_i$).  Under unrestricted search, $G$ contains a differentiator for $R \setminus \{g_i\}$ by hypothesis, so this bucket scores as solvable-next-turn, contributing $k-1$.  Total:~$k$.  External diagnostics producing $k$ singletons trivially score~$k$.
+	\end{proof}
+	
+	The hypothesis holds empirically: $|G| = 12{,}972$ provides differentiators for virtually all subsets of size $\leq 9$.
+	
+	\begin{corollary}\label{cor:deeper}
+		Deeper lookahead amplifies score saturation rather than resolving it: each additional level evaluates future solvability against the same oversized action space, triggering the same degeneracy recursively.
+	\end{corollary}
+	
+	More generally, score saturation suggests a principle for shallow-search systems: restricting the future-action search space can \emph{improve} present-move discrimination by preventing evaluation function degeneracy.
+	
+	%----------------------------------------------------------------------
+	\subsection{Restriction to Answer-Set Guesses}
+	%----------------------------------------------------------------------
+	
+	Restricting all guesses to $R$ (after the opener) produces catastrophic results:
+	
+	\begin{table}[h]
+		\centering
+		\caption{Full solver vs.\ guessing only from $R$.}
+		\label{tab:restrict}
+		\begin{tabular}{@{}lcccc@{}}
+			\toprule
+			Configuration & Total & $\Delta$ & 6+ & Max \\
+			\midrule
+			Full solver (from $G$) & 7,930 & --- & 2 & 6 \\
+			Always from $R$ & 8,171 & $+241$ & 35 & 8 \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	The worst case illustrates why external diagnostics are essential:
+	\begin{center}
+		\texttt{wound}: \texttt{salet}$\to$\texttt{round}$\to$\texttt{bound}$\to$\texttt{found}$\to$\texttt{hound}$\to$\texttt{mound}$\to$\texttt{pound}$\to$\texttt{wound}
+	\end{center}
+	This sequential cycling through the \texttt{\_OUND} cluster demonstrates that external diagnostic words from $G \setminus R$ are essential.  The headline algorithm's use of the full guess set for scoring---while preferring $R$ only as a tiebreaker---achieves the correct balance.
+	
+	%----------------------------------------------------------------------
+	\subsection{The Broad Negative Search}
+	\label{sec:sweep}
+	%----------------------------------------------------------------------
+	
+	We conducted an extensive sweep across scoring functions, tiebreaker orderings, bonus weights, thresholds, cluster parameters, and combined rules.  No global stationary variant---one that applies a fixed scoring and tiebreaking rule at every game state---improved on 7,925~guesses.  Key degradations include singleton-count scoring ($+70$), expected-size minimization ($+35$), letter-frequency weighting ($+6$ to $+248$), and second-order differentiation ($+77$).
+	
+	The baseline, despite its simplicity, is not an arbitrary starting point---it occupies a genuine local optimum in the space of stationary heuristics.
+	
+	%==============================================================================
+	\section{The Variable Hierarchy}
+	\label{sec:hierarchy}
+	%==============================================================================
+	
+	The staircase from 7,930 to 7,925 was not found by intuition.  It was found by instrumenting the baseline solver and analyzing the structure of the decision space.
+	
+	%----------------------------------------------------------------------
+	\subsection{Metric Correlation Structure}
+	%----------------------------------------------------------------------
+	
+	We recorded, at every decision point with tied pattern count (787 states), the values of 10 candidate metrics for all tied guesses and computed pairwise correlations.
+	
+	\begin{observation}[Metric Clusters]\label{obs:clusters}
+		At threshold $|\rho| > 0.90$, the metrics separate into two clusters and two independent variables:
+		\begin{itemize}[nosep]
+			\item \textbf{Global-shape family:} \{pattern count, singletons, entropy\}\\ ($\rho \geq 0.93$ pairwise)
+			\item \textbf{Tail-shape family:} \{worst bucket, expected size, sum-of-squares, variance\}\\ ($\rho \geq 0.87$ pairwise, with expected--variance $\rho = 0.98$)
+			\item \textbf{Independent:} second-largest bucket ($\max |\rho| = 0.87$)
+			\item \textbf{Orthogonal:} answer-set membership ($\max |\rho| = 0.054$)
+		\end{itemize}
+	\end{observation}
+	
+	This structure has three immediate consequences:
+	
+	\paragraph{Why entropy cannot beat pattern count.}
+	They belong to the same cluster.  Since the algorithm already maximizes pattern count, entropy provides redundant information as a replacement---and the marginal cases where they disagree are concentrated in the clustered regime, where entropy's preferences are actively harmful (Section~\ref{sec:complexity}).
+	
+	\paragraph{Why many tiebreakers are equivalent.}
+	Expected bucket size, variance, sum of squares, $\ell_2$ norm, $\ell_3$ norm, Gini index, entropy of bucket sizes, and lexicographic-tail comparison all produce identical results (7,929) when used as the primary tiebreaker after R-preference.  They belong to the same tail-shape family and agree on virtually all tied decisions.
+	
+	\paragraph{Where improvement must come from.}
+	The second-largest bucket $b_2$ is the most independent dimension available.  It captures partition-tail information that expected bucket size (dominated by $b_1^2$) misses.
+	
+	A natural question is whether $b_3$ provides a further independent dimension.  It does not.  Testing all combinations of $b_3$ insertion into the tiebreaker cascade shows that $b_3$ disagrees with $E$ at 149 of 884 decision points---this is not trivial noise---but these disagreements are uncorrelated with game outcome.  Every global $b_3$ policy gives 7,930 ($+2$); the only formulation matching baseline is $\max(b_2, b_3)$, which effectively reduces to $b_2$ at most decisions.  The variable hierarchy has exactly two actionable partition-shape dimensions.
+	
+	%----------------------------------------------------------------------
+	\subsection{Predictive Power}
+	%----------------------------------------------------------------------
+	
+	Among metrics that actually vary between tied candidates, correlation with game outcome provides a ranking:
+	
+	\begin{table}[h]
+		\centering
+		\caption{Predictive power of partition-shape metrics.  Measured across 787 decision points with ties.}
+		\label{tab:predictive}
+		\begin{tabular}{@{}lcl@{}}
+			\toprule
+			Metric & $|r|$ with outcome & Note \\
+			\midrule
+			Entropy & 0.344 & Redundant with pattern count \\
+			Singletons & 0.277 & Redundant with pattern count \\
+			Pattern count & 0.250 & Already maximized (Layer 1) \\
+			Answer-set membership & 0.160 & Already used (Layer 2) \\
+			Second-largest bucket & 0.122 & \textbf{Independent, actionable} \\
+			Worst bucket & 0.004 & No predictive power \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	The striking finding: \emph{worst-case bucket size has no predictive power} ($|r| = 0.004$) among candidates with equal pattern count.  The baseline solver's tiebreaker---minimize $b_1$---is resolving ties with a metric that contains no signal.  This is why every tail-shape metric improves on it.
+	
+	%----------------------------------------------------------------------
+	\subsection{Collapse of Continuous Parameterizations}
+	%----------------------------------------------------------------------
+	
+	To verify that the staircase reflects genuine discrete structure, we tested:
+	\begin{itemize}[nosep]
+		\item Power-law costs $C(s) = s^\alpha$ for $\alpha \in [1.2, 3.0]$: all give 7,929.
+		\item Logarithmic, exponential, and piecewise damping: all give 7,929.
+		\item Linear combinations $w_1 b_1 + w_2 E$: map to 7,929 or 7,928 across the entire feasible range.
+	\end{itemize}
+	
+	The tail-shape family is a genuine attractor: no continuous reparameterization escapes it.  Improvement requires moving to the independent dimension ($b_2$), which is precisely what the staircase does.
+	
+	%==============================================================================
+	\section{The Heuristic Staircase}
+	\label{sec:staircase}
+	%==============================================================================
+	
+	Guided by the variable hierarchy, we constructed a sequence of progressively refined tiebreakers.  Each step saves exactly 1--2 guesses by a different mechanism.
+	
+	%----------------------------------------------------------------------
+	\subsection{Component Contributions}
+	%----------------------------------------------------------------------
+	
+	\begin{table}[h]
+		\centering
+		\caption{Cumulative contribution of algorithm components.}
+		\label{tab:cumulative}
+		\begin{tabular}{@{}lcc@{}}
+			\toprule
+			Configuration & Total & $\Delta$ \\
+			\midrule
+			Pattern count only (no R-pref) & 8,316 & --- \\
+			$+$ Answer-set preference & 7,930 & $-386$ \\
+			$+$ Expected tiebreak & 7,929 & $-1$ \\
+			$+$ Second-worst tiebreak & 7,928 & $-1$ \\
+			$+$ Regime split ($|R| \leq 11$) & 7,926 & $-2$ \\
+			$+$ Cluster condition & 7,925 & $-1$ \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	The answer-set preference dominates: 386 of 391 guesses saved (98.7\%).  As Section~3.2 shows, this figure reflects R-preference's contribution from the weakest baseline; within the refined architecture its marginal cost is 13~guesses, and it imposes no detectable partition-quality cost.  The subsequent tiebreaker refinements save 5 additional guesses through progressively finer partition-shape discrimination.
+	
+	%----------------------------------------------------------------------
+	\subsection{The Progression}
+	%----------------------------------------------------------------------
+	
+	\begin{table}[h]
+		\centering
+		\caption{The heuristic staircase.  All variants use \texttt{SALET} opener, pattern-count maximization, and answer-set preference.}
+		\label{tab:staircase}
+		\begin{tabular}{@{}cccccccl@{}}
+			\toprule
+			Total & Avg & 2 & 3 & 4 & 5 & 6 & Change from previous \\
+			\midrule
+			7,930 & 3.4255 & 79 & 1217 & 976 & 41 & 2 & Baseline: minimize $b_1$ \\
+			7,929 & 3.4251 & 79 & 1218 & 975 & 41 & 2 & Minimize $E$, then $b_1$ \\
+			7,928 & 3.4246 & 79 & 1218 & 976 & 40 & 2 & Minimize $b_2$, then $E$, then $b_1$ \\
+			7,927 & 3.4242 & 79 & 1218 & 977 & 39 & 2 & E-cascade if $|R| \leq 10$, else $b_2$ \\
+			7,926 & 3.4238 & 79 & 1220 & 974 & 40 & 2 & Threshold to $|R| \leq 11$ \\
+			7,925 & 3.4233 & 79 & 1221 & 973 & 40 & 2 & E-cascade if $|R| \leq 17$ \& no cluster \\
+			\midrule
+			7,921 & 3.4216 & 78 & 1229 & 964 & 42 & 2 & Exact DP over $\mathcal{T}(R)$ \\
+			7,920 & 3.4212 & 78 & 1225 & 971 & 41 & 0 & Selby unrestricted optimal \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	\paragraph{Distribution stability.}
+	The 2-guess count is fixed at 79 across the entire heuristic range; the 6-guess count is fixed at~2.  All variation is in the 3/4/5 partition.
+	
+	\paragraph{Persistent six-guess words.}
+	Every heuristic variant and the 7,921 DP require 6~guesses for \texttt{hover} and one other \texttt{\_O\_ER} word.  Only Selby's unrestricted optimal solver achieves max~5.
+	
+	\paragraph{Exactly one guess per step.}
+	Each modification saves exactly 1~guess, except the threshold tuning at $7{,}927 \to 7{,}926$ (also~1).  The total heuristic improvement is 5~guesses.
+	
+	%----------------------------------------------------------------------
+	\subsection{Steps 1--2: The Cascade Discovery}
+	\label{sec:cascade}
+	%----------------------------------------------------------------------
+	
+	We define two tiebreaker cascades:
+	
+	\paragraph{Expected cascade.}
+	Among top-bucket candidates with equal $R$-membership: minimize $E(g,R)$, then $b_1$, then $(b_2, b_3, \ldots)$ lexicographically.
+	
+	\paragraph{Second-worst cascade.}
+	Minimize $b_2$, then $E(g,R)$, then $b_1$, then $(b_2, b_3, \ldots)$ lexicographically.
+	
+	Step~1 ($7{,}930 \to 7{,}929$): replacing the worst-bucket tiebreaker with the expected cascade saves 1~guess.  This is unsurprising given that $b_1$ has zero predictive power.
+	
+	Step~2 ($7{,}929 \to 7{,}928$): replacing the expected cascade with the second-worst cascade saves 1 more guess.  This is the variable hierarchy in action: $b_2$ is the most independent dimension, and promoting it to primary priority while retaining $E$ as a secondary tiebreaker captures information that $E$ alone (dominated by $b_1^2$) misses.
+	
+	We note that using $b_2$ alone (without $E$ as secondary) yields only 7,929---the same as the expected cascade.  The improvement to 7,928 requires the specific ordering $b_2 \to E \to b_1$.
+	
+	%----------------------------------------------------------------------
+	\subsection{Steps 3--4: The Regime Split}
+	%----------------------------------------------------------------------
+	
+	The expected cascade is globally inferior to the second-worst cascade (7,929 vs.\ 7,928).  But it turns out to be \emph{locally superior} for small candidate sets.
+	
+	\textbf{Small $|R|$ ($\leq 11$):} The partition has few buckets.  $E(g,R)$ captures the full shape effectively because there are few terms in $\sum b_i^2$.  The expected cascade dominates.
+	
+	\textbf{Large $|R|$ ($> 11$):} The partition has many buckets, and $b_1$ is often structurally determined by morphological clusters.  The second-worst cascade targets the actionable margin~$b_2$.
+	
+	Using the expected cascade for $|R| \leq 10$ and the second-worst cascade otherwise yields 7,927 ($-1$).  Tuning the threshold to $|R| \leq 11$ yields 7,926 ($-1$ more).  The transition is sharp: thresholds 11 through 24 all produce 7,926, while thresholds $\leq 8$ produce only 7,928.  This broad plateau argues against overfitting (Section~\ref{sec:robustness}).
+	
+	\paragraph{The regime split captures depth structure.}
+	A natural hypothesis is that the regime split proxies for guess depth and that explicit depth conditioning might improve on it.  Exhaustive testing refutes this: at Guess~4 and beyond, there are \textbf{zero} live tiebreak decisions---every state is either trivial ($|R| \leq 2$) or resolved by the perfect-differentiator gate.  Forcing the expected cascade at Guess-$4{+}$ produces exactly 7,925 with zero word-level differences from baseline.  The $|R|$+cluster regime split already captures the full decision landscape without explicit depth conditioning.
+	
+	%----------------------------------------------------------------------
+	\subsection{Why the Threshold Is Where It Is}
+	%----------------------------------------------------------------------
+	
+	The regime-split threshold at $|R| \approx 11$ aligns with a structural transition in the answer set's self-differentiation capacity:
+	
+	\begin{table}[h]
+		\centering
+		\caption{Self-differentiation ratio by candidate-set size.}
+		\label{tab:selfdiff_by_size}
+		\begin{tabular}{@{}cccc@{}}
+			\toprule
+			$|R|$ & States & Avg Ratio & Perf.\ Diff.\ in $R$ \\
+			\midrule
+			2 & 438 & 1.000 & 100.0\% \\
+			3 & 294 & 0.935 & 80.6\% \\
+			4 & 168 & 0.879 & 61.9\% \\
+			5 & 130 & 0.854 & 34.6\% \\
+			6 & 132 & 0.836 & 36.4\% \\
+			7 & 98 & 0.906 & 28.6\% \\
+			8 & 112 & 0.834 & 21.4\% \\
+			9 & 90 & 0.847 & 20.0\% \\
+			10 & 70 & 0.855 & 14.3\% \\
+			$> 10$ & all & 0.80--0.88 & 0\% \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	For $|R| \leq 10$, 62.1\% of states have a perfect differentiator within $R$ itself; the partition is ``clean'' and the expected cascade correctly captures global shape.  For $|R| > 10$, no state has a perfect internal differentiator---external diagnostics become essential, the worst bucket is often structurally locked by morphological clusters, and the second-worst cascade correctly targets the actionable margin.  The threshold is not arbitrary; it tracks a genuine phase transition in the answer set's structure.
+	
+	%----------------------------------------------------------------------
+	\subsection{Step 5: The Cluster Condition}
+	%----------------------------------------------------------------------
+	
+	The regime split can be extended further.  Even at moderate $|R|$ (up to~17), if the candidate set is morphologically ``clean,'' the expected cascade is superior.  The key feature is whether $R$ contains a \emph{dangerous suffix cluster}.
+	
+	\begin{definition}[Dangerous Suffix Cluster]\label{def:cluster}
+		For remaining set~$R$, scan suffix lengths 4, 3, and~2.  A suffix group $C \subseteq R$ with $|C| \geq 3$ is \emph{dangerous} if no $g \in G$ satisfies $S(g,C) = |C|$.  Define $\mathrm{DC}(R) = \max\{|C| : C \text{ is dangerous}\}$, or~$0$ if none exists.
+	\end{definition}
+	
+	The final global policy:
+	\begin{equation}\label{eq:policy}
+		\text{tiebreak} = \begin{cases}
+			\text{expected cascade} & \text{if } |R| \leq 17 \text{ and } \mathrm{DC}(R) = 0 \\
+			\text{second-worst cascade} & \text{otherwise}
+		\end{cases}
+	\end{equation}
+	
+	This yields 7,925 ($-1$ from 7,926).  The rationale: when dangerous clusters are present, the worst bucket is structurally locked (no guess can break the cluster), and $b_2$ identifies the actionable margin.  When no clusters are present, the partition is ``clean'' and the global expected-size optimization applies.
+	
+	\paragraph{Suffix detection is operationally optimal but theoretically incomplete.}
+	Generalized cluster detection---scanning for undifferentiable subsets at arbitrary positions, not just suffixes---finds genuine additional structure: 10 non-suffix undifferentiable patterns that suffix detection misses (e.g., \texttt{\_RA\_E} at $|R| = 8$, \texttt{SA\_\_\_} at $|R| = 8$).  Despite this, every generalized variant performs worse ($+2$ to $+3$).  The suffix detector's three ``false positive'' clusters accidentally produce correct routing decisions.  Suffix detection does not capture all undifferentiable structure in the answer set, but the extra non-suffix structure is not decision-useful within this policy.
+	
+	%----------------------------------------------------------------------
+	\subsection{The 7,925 Algorithm}
+	\label{sec:algorithm}
+	%----------------------------------------------------------------------
+	
+	\textbf{In plain English:}
+	\begin{enumerate}[nosep]
+		\item Open with \texttt{SALET}.
+		\item After each response, keep only words consistent with all clues.  Call this set~$R$.
+		\item If one word remains, guess it.
+		\item If $|R| \leq 20$ and some dictionary word uniquely distinguishes every word in~$R$, guess it (prefer one from~$R$).
+		\item Otherwise, find all dictionary words producing the most distinct patterns against~$R$.  Among those:
+		\begin{enumerate}[nosep]
+			\item Prefer words from~$R$.
+			\item If $|R| \leq 17$ and no group of $3{+}$ words sharing a suffix resists differentiation: pick the one with smallest expected bucket size.
+			\item Otherwise: pick the one with smallest second-largest bucket.
+		\end{enumerate}
+	\end{enumerate}
+	
+	\begin{algorithm}[h]
+		\caption{The 7,925 Solver}
+		\label{alg:7925}
+		\begin{algorithmic}[1]
+			\Require Answer set $A$, guess set $G$, target $t \in A$
+			\State $R \gets A$;\; $g \gets \texttt{SALET}$
+			\Loop
+			\State $R \gets \{r \in R : \pi(g,r) = \pi(g,t)\}$
+			\If{$|R| \leq 1$} guess $R$ and \Return \EndIf
+			\If{$|R| \leq 20$ and $\exists$ perfect differentiator $d \in G$}
+			\State $g \gets d$ (prefer $d \in R$)
+			\Else
+			\State $\mathcal{T} \gets \{g' \in G : S(g',R) = S^*(R)\}$
+			\State Restrict to $\mathcal{T} \cap R$ if nonempty, else $\mathcal{T}$
+			\If{$|R| \leq 17$ and $\mathrm{DC}(R) = 0$}
+			\State $g \gets \arg\min_{g' \in \mathcal{T}}\bigl(E(g',R),\; b_1,\; (b_2, b_3, \ldots)\bigr)$
+			\Else
+			\State $g \gets \arg\min_{g' \in \mathcal{T}}\bigl(b_2,\; E(g',R),\; b_1,\; (b_2, b_3, \ldots)\bigr)$
+			\EndIf
+			\EndIf
+			\EndLoop
+		\end{algorithmic}
+	\end{algorithm}
+	
+	\paragraph{Computational cost.}
+	The pattern matrix ($12{,}972 \times 2{,}315$, 30\,MB as \texttt{uint8}) is precomputed in ${\sim}5$~seconds.  Each turn requires $O(|G| \cdot |R|)$ pattern lookups.  The full benchmark executes in approximately 144~seconds on an AMD Ryzen~3 7000-series processor, dominated by the dangerous-cluster detection at ${\sim}85$ unique game states.
+	
+	%----------------------------------------------------------------------
+	\subsection{Robustness and Overfitting}
+	\label{sec:robustness}
+	%----------------------------------------------------------------------
+	
+	All tiebreaker refinements were developed and evaluated on the same 2,315-word answer set.  The evidence against severe overfitting is the breadth of the plateaus:
+	\begin{itemize}[nosep]
+		\item The expected cascade gives 7,929 for all power-law exponents $\alpha \in [1.2, 3.0]$ and all tested continuous scoring variants.
+		\item The regime-split threshold gives 7,926 for $|R| \in \{11, 12, \ldots, 24\}$---a 14-point plateau.
+		\item The cluster threshold gives 7,925 for $\mathrm{DC} \in \{0, 4, 5, 6, 7, 8\}$---a 6-point plateau.
+		\item The $|R|$ threshold for the cluster-conditional regime gives 7,925 for $|R| \in \{17, 18, \ldots, 24\}$.
+		\item Forcing the expected cascade at Guess-$4{+}$ changes zero decisions.
+		\item No quality-gap-based suspension of R-preference changes any decision.
+	\end{itemize}
+	
+	The algorithm is not balanced on a knife edge.  Nevertheless, the results are specific to this word list and should be interpreted accordingly.
+	
+	%----------------------------------------------------------------------
+	\subsection{Comparison and Analysis}
+	%----------------------------------------------------------------------
+	
+	\begin{table}[h]
+		\centering
+		\caption{Comparison on the original 2,315-word answer set.}
+		\label{tab:comparison}
+		\begin{tabular}{@{}lcccc@{}}
+			\toprule
+			Solver & Total & Gap & Max & Method \\
+			\midrule
+			Selby (2022) & 7,920 & 0 & 5 & Exhaustive minimax \\
+			This work (DP) & 7,921 & $+1$ & 6 & Exact DP, top-bucket \\
+			This work (Guess-2 spec.) & 7,921 & $+1$ & 6 & Heuristic, 2-state override \\
+			\textbf{This work (global)} & \textbf{7,925} & $+5$ & 6 & Greedy, adaptive cascade \\
+			This work (simple) & 7,930 & $+10$ & 6 & Greedy, $\min b_1$ \\
+			Sanderson (2022b) & $\approx$7,948 & $+28$ & 6 & Entropy + depth-2 LA \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	\begin{table}[h]
+		\centering
+		\caption{Per-word comparison: 7,925 heuristic vs.\ Selby optimal.}
+		\label{tab:perword}
+		\begin{tabular}{@{}lr@{}}
+			\toprule
+			Same depth as optimal & 2,168 (93.7\%) \\
+			Worse & 74 words ($+79$ excess) \\
+			Better & 73 words ($-74$ saved) \\
+			Net excess & $+5$ guesses \\
+			\midrule
+			Gap $-2$ & 1 word \\
+			Gap $-1$ & 72 words \\
+			Gap $+1$ & 69 words \\
+			Gap $+2$ & 5 words \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	The five $+2$ words are \texttt{hover}, \texttt{joker}, \texttt{offer}, \texttt{roger}, and \texttt{rower}---all in the \texttt{\_O\_ER} family.  The \texttt{\_er} suffix accounts for 20 of 74 worse words and 25 of 79 excess guesses.  The 73 words where we beat optimal arise from the answer-set preference: by guessing from~$R$, the heuristic occasionally solves in fewer guesses than Selby's deterministic tree.
+	
+	\begin{table}[h]
+		\centering
+		\caption{Cross-tabulation of per-word guess counts. Each cell gives the number of target words requiring that many guesses under the 7,925 heuristic (rows) and Selby's optimal solver (columns). Diagonal entries indicate agreement; off-diagonal entries indicate words where the two solvers differ.  Row and column marginals should match the respective guess-count distributions in Table~\ref{tab:staircase}.}
+		\label{tab:crosstab}
+		\begin{tabular}{@{}rccccc@{}}
+			\toprule
+			& \multicolumn{4}{c}{Selby optimal} \\
+			\cmidrule(l){2-5}
+			Heuristic & 2 & 3 & 4 & 5 \\
+			\midrule
+			2 & 78 & 1 &      &    \\
+			3 &    & 1164 & 56 & 1  \\
+			4 &    & 57 & 901  & 15 \\
+			5 &    & 3  & 12   & 25 \\
+			6 &    &    & 2    &    \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	\begin{table}[h]
+		\centering
+		\caption{Opener comparison under the 7,925 adaptive regime. $S$: number of distinct feedback patterns against the full answer set. $M$: size of the largest feedback bucket.}
+		\label{tab:opener}
+		\begin{tabular}{@{}lcccc@{}}
+			\toprule
+			Opener & Total & 6+ & $S$ & $M$ \\
+			\midrule
+			\texttt{SALET} & 7,925 & 2 & 148 & 221 \\
+			\texttt{REAST} & 7,946 & 0 & 147 & 227 \\
+			\texttt{SLATE} & 7,946 & 3 & 147 & 221 \\
+			\texttt{CRATE} & 7,948 & 2 & 148 & 246 \\
+			\texttt{TRACE} & 7,951 & 2 & 150 & 246 \\
+			\texttt{CRANE} & 7,951 & 3 & 142 & 263 \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	\texttt{REAST} achieves zero six-guess words but a worse total (+21), which illustrates the tradeoff between expected-case and worst-case optimization.
+	
+	%==============================================================================
+	\section{The Restricted-Search Bound and the Localized Gap}
+	\label{sec:localized}
+	%==============================================================================
+	
+	%----------------------------------------------------------------------
+	\subsection{Method}
+	%----------------------------------------------------------------------
+	
+	We construct an exact expected-cost solver by restricting the action space
+	at every state to $\mathcal{T}(R)$ and solving by backward induction.
+	Each game state is identified with a remaining candidate set~$R \subseteq A$.
+	
+	We enumerate all states reachable from the \texttt{SALET} root,
+	sort them by~$|R|$, and solve from smallest to largest.
+	For each state~$R$, we select the guess minimizing expected total cost:
+	\begin{equation}\label{eq:bellman}
+		V(R) \;=\; \min_{g \,\in\, \mathcal{T}(R)}
+		\left[\,1 \;+\; \frac{1}{|R|}\sum_{p}\,|B_p|\;\cdot\;V(B_p)\right],
+	\end{equation}
+	with base case $V(\{a\}) = 0$ for any singleton (the target has already
+	been identified by the preceding guess's feedback).
+	Because states are processed in order of increasing~$|R|$,
+	every child lookup references a previously solved state.
+	
+	The reachable graph under $\mathcal{T}(R)$ from the \texttt{SALET} root
+	contains 1{,}108 nonterminal states---small enough for exact solution
+	in seconds.
+	
+	%----------------------------------------------------------------------
+	\subsection{The 7,921 Result}
+	%----------------------------------------------------------------------
+	
+	\begin{table}[h]
+		\centering
+		\caption{Exact DP over various candidate classes.}
+		\label{tab:dp}
+		\begin{tabular}{@{}lccc@{}}
+			\toprule
+			Candidate Class & States & Total & Dist (2/3/4/5/6) \\
+			\midrule
+			Top-bucket & 1,108 & 7,921 & 78/1229/964/42/2 \\
+			Top-bucket$-1$ & 3,482 & 7,921 & 81/1226/961/45/2 \\
+			Top-bucket $\cup$ leaf-union & 1,108 & 7,921 & 78/1229/964/42/2 \\
+			Selby (unrestricted) & --- & 7,920 & 78/1225/971/41/0 \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	\paragraph{The top-bucket class is tight.}
+	Expanding to top-bucket$-1$ (3,482 states, $3\times$ more candidates per state) does not reduce the total.  The optimal action within $\mathcal{T}(R)$ is also optimal within the expanded class.
+	
+	\paragraph{The gap is exactly 1 guess.}
+	Word-by-word comparison: 2,207 words (95.3\%) match optimal; 52 are worse ($+58$ excess); 56 are better ($-57$ saved).  The \texttt{\_er} suffix accounts for 23 of 52 worse words and 29 of 58 excess guesses.  All six $+2$ words (\texttt{fewer}, \texttt{hover}, \texttt{joker}, \texttt{offer}, \texttt{roger}, \texttt{rower}) belong to the \texttt{\_O\_ER} family.
+	
+	\paragraph{The six-guess words persist.}
+	Both \texttt{hover} and \texttt{joker} require 6~guesses under every tested policy.
+	
+	%----------------------------------------------------------------------
+	\subsection{Where the 4 Guesses Come From}
+	\label{sec:4guesses}
+	%----------------------------------------------------------------------
+	
+	The 7,925 global heuristic is 4~guesses above the restricted-DP optimum of 7,921.  These 4~guesses are not a diffuse failure of the policy.  They are concentrated in exactly two early-game states.
+	
+	\begin{observation}[Gap Localization]\label{obs:gap}
+		Of 114 nontrivial \texttt{SALET}-response buckets, exactly 2 have a Guess-2 candidate that improves the subtree total.  The remaining 112 are already optimal within $\mathcal{T}(R)$.
+	\end{observation}
+	
+	We identified these states by performing a Guess-2 rollout: for each of the 114 nontrivial \texttt{SALET}-response buckets, we tested all top-bucket candidates as Guess-2 words, played out the remainder of each game using the baseline 7,925 policy, and compared subtree totals.
+	
+	\begin{table}[h]
+		\centering
+		\caption{The two improving Guess-2 overrides.  Both override words are in $\mathcal{T}(R)$.}
+		\label{tab:overrides}
+		\begin{tabular}{@{}clllcc@{}}
+			\toprule
+			Pattern & $|R|$ & Baseline & Override & Subtree $\Delta$ & Total \\
+			\midrule
+			0 & 221 & \texttt{round} & \texttt{courd} & $-3$ & 7,922 \\
+			81 & 42 & \texttt{micro} & \texttt{mucho} & $-1$ & 7,924 \\
+			\midrule
+			Both & & & & $-4$ & 7,921 \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	The two corrections are exactly additive: applying only pattern~0 gives 7,922, only pattern~81 gives 7,924, and both together give 7,921.  No interaction effects exist between the two subtrees.
+	
+	\paragraph{The two corrections arise from distinct mechanisms:}
+	
+	\textbf{Pattern~0 ($|R| = 221$, saves~3): A solvability/stubbornness tradeoff.}
+	
+	\begin{table}[h]
+		\centering
+		\caption{Guess-2 candidate comparison for \texttt{SALET} pattern~0.}
+		\label{tab:pattern0}
+		\begin{tabular}{@{}lcccccccc@{}}
+			\toprule
+			Guess & $E$ & $b_2$ & Singletons & SolvMass & SolvCnt & StubMass & StubCnt \\
+			\midrule
+			\texttt{round} & 6.41 & 14 & 35 & 148 & 64 & 72 & 7 \\
+			\texttt{courd} & 6.99 & 16 & 34 & 149 & 66 & 72 & 6 \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	\texttt{courd} has worse $E$ and worse $b_2$---the baseline correctly rejects it under the second-worst cascade.  But it produces one more solvable child state (149 vs.\ 148) and one fewer stubborn cluster (6 vs.\ 7).  The downstream benefit outweighs the immediate partition-quality cost, but only over the full 221-word subtree.
+	
+	\textbf{Pattern~81 ($|R| = 42$, saves~1): A singleton-yield effect.}
+	
+	\begin{table}[h]
+		\centering
+		\caption{Guess-2 candidate comparison for \texttt{SALET} pattern~81.}
+		\label{tab:pattern81}
+		\begin{tabular}{@{}lccccc@{}}
+			\toprule
+			Guess & $E$ & $b_2$ & Singletons & SolvMass & StubMass \\
+			\midrule
+			\texttt{micro} & 2.52 & 3 & 16 & 42 & 0 \\
+			\texttt{mucho} & 3.00 & 6 & 20 & 42 & 0 \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	Both candidates have zero stubborn buckets and identical solvable mass.  The only distinguishing feature is singleton count: \texttt{mucho} produces 20 singletons vs.\ \texttt{micro}'s~16.  More singletons mean more instant terminations at Guess~3, compensating for the worse~$E$.  Child-bucket solvability heuristics give identical scores for both candidates; only the singleton signal distinguishes them.
+	
+	\paragraph{Naive trap metrics fail catastrophically.}
+	We tested whether simple Guess-2 risk summaries---minimum dangerous-cluster profile, minimum no-perfect-diff mass, and variants---could recover the two corrections.  Every naive trap metric dramatically worsens performance ($+39$ to $+47$) because it redirects Guess-2 selection at \emph{all} SALET buckets, not just the 2 that benefit.  For pattern~81, all metrics select \texttt{micro} (the baseline choice), because \texttt{mucho}'s advantage is invisible to trap-based summaries.
+	
+	\paragraph{A compact heuristic reaches 7,921, but with narrow thresholds.}
+	Child-bucket solvability heuristics (min stubborn mass) applied at Guess-2 for $|R| \geq 100$ correctly recover the pattern-0 correction, reaching 7,922.  Adding a singleton-maximization rule for a narrow mid-sized window ($40 \leq |R| < 50$) recovers pattern~81, reaching 7,921.  But this window is fragile: 40--49 succeeds, while 40--59, 35--59, and other ranges fail.  This threshold behavior suggests list-specific overfitting.  The compact heuristic matches the DP total but achieves a slightly different guess-count distribution, confirming that it does not recover the DP policy exactly.  We present this as an exploratory finding, not a robust algorithm.
+	
+	%----------------------------------------------------------------------
+	\subsection{The Sacrifice Structure}
+	%----------------------------------------------------------------------
+	
+	A diagnostic search identified 8 \texttt{SALET}-response subtrees where allowing a 1-bucket sacrifice (choosing a guess with $S^*(R)-1$ buckets) reduces local cost.  These subtrees correspond to large candidate sets ($|R| = 16$--$67$) where a slight partition-quality sacrifice enables better downstream resolution.
+	
+	This localizes the source of the final gap: the 1~guess separating 7,921 from 7,920 requires \emph{anti-greedy} play at a small number of states---sacrificing immediate partition quality for multi-turn strategic advantage.  This form of anticipatory play is structurally unavailable to any algorithm that respects the top-bucket restriction.
+	
+	Note: the sacrifice structure describes the $7{,}921 \to 7{,}920$ gap, not the $7{,}925 \to 7{,}921$ gap.  The latter is entirely a tiebreaking gap \emph{within} $\mathcal{T}(R)$ (Section~\ref{sec:4guesses}); the former requires stepping \emph{outside} $\mathcal{T}(R)$.
+	
+	%----------------------------------------------------------------------
+	\subsection{Practical Deployment}
+	%----------------------------------------------------------------------
+	
+	Once computed, the 1{,}108-state optimal policy is a lookup table: each game requires only a sequence of state lookups, with no scoring or search at runtime. Playing out all 2{,}315 games via table lookup takes under 0.1~seconds; the precomputation step (backward induction over 1{,}108 states) takes approximately 144~seconds on the same hardware. The 7,921 solver is arguably the simplest to \emph{use}---simpler than any heuristic---though it requires the precomputation step.
+	
+	%==============================================================================
+	\section{Structural Foundations}
+	%==============================================================================
+	
+	%----------------------------------------------------------------------
+	\subsection{Morphological Clusters}
+	%----------------------------------------------------------------------
+	
+	\begin{definition}
+		A \emph{$k$-DOF cluster} is a subset $C \subseteq A$ where all words share identical letters at $5-k$ positions and vary independently at $k$~positions.
+	\end{definition}
+	
+	\begin{definition}[Partition Ceiling]
+		$P_{\max}(C) = \max_{g \in G} S(g,C)$: the maximum number of distinct patterns achievable by any word in~$G$.
+	\end{definition}
+	
+	If $P_{\max}(C) < |C|$, no single guess can perfectly differentiate $C$, and multi-turn resolution is a mathematical necessity.
+	
+	%----------------------------------------------------------------------
+	\subsection{Partition Ceilings}
+	%----------------------------------------------------------------------
+	
+	We computed $P_{\max}(C)$ by exhaustive search over all 12,972 words for each cluster.
+	
+	\begin{table}[h]
+		\centering
+		\caption{Partition ceilings for major morphological clusters.  $P_{\max,C}$: ceiling within cluster.}
+		\label{tab:ceilings}
+		\begin{tabular}{@{}lcccccl@{}}
+			\toprule
+			Cluster & DOF & $|C|$ & $P_{\max}$ & $P_{\max}/|C|$ & $P_{\max,C}$ & Best $g$ \\
+			\midrule
+			\texttt{\_A\_ER} & 2 & 29 & 12 & 0.41 & 6 & \texttt{patly} \\
+			\texttt{\_O\_ER} & 2 & 25 & 11 & 0.44 & 6 & \texttt{scowl} \\
+			\texttt{\_I\_ER} & 2 & 24 & 10 & 0.42 & 6 & \texttt{damns} \\
+			\texttt{\_\_ING} & 2 & 23 & 12 & 0.52 & 6 & \texttt{style} \\
+			\texttt{\_\_LLY} & 2 & 22 & 12 & 0.55 & 4 & \texttt{budis} \\
+			\texttt{\_RA\_E} & 2 & 20 & 10 & 0.50 & 7 & \texttt{ditch} \\
+			\texttt{\_\_TCH} & 2 & 18 & 9 & 0.50 & 4 & \texttt{humid} \\
+			\texttt{\_RO\_E} & 2 & 16 & 10 & 0.63 & 6 & \texttt{pands} \\
+			\texttt{\_IGHT} & 1 & 9 & 6 & 0.67 & 2 & \texttt{ferms} \\
+			\texttt{\_OUND} & 1 & 8 & 5 & 0.63 & 2 & \texttt{brash} \\
+			\texttt{\_ATCH} & 1 & 7 & 5 & 0.71 & 2 & \texttt{blimp} \\
+			\texttt{\_AUNT} & 1 & 6 & 4 & 0.67 & 2 & \texttt{dough} \\
+			\texttt{\_ASTE} & 1 & 6 & 4 & 0.67 & 2 & \texttt{batch} \\
+			\texttt{\_REED} & 1 & 4 & 4 & 1.00 & 2 & \texttt{befog} \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	\begin{observation}
+		For all 1-DOF clusters, $P_{\max,C} = 2$: a cluster member can only distinguish itself from all others.  Cluster members are structurally incapable of resolving their own clusters, forcing external diagnostic words from $G \setminus R$.
+	\end{observation}
+	
+	\begin{observation}
+		The ratio $P_{\max}/|C|$ is systematically lower for 2-DOF clusters (0.41--0.63) than 1-DOF clusters (0.63--1.00).  Two independently varying positions create combinatorial diversity that no single five-letter probe can fully resolve.
+	\end{observation}
+	
+	These clusters are precisely the structures detected by the dangerous-cluster feature $\mathrm{DC}(R)$ in the 7,925 algorithm.  When such clusters are present, the worst bucket is determined by cluster size, not by guess quality.  The second-worst cascade correctly redirects optimization effort to~$b_2$.
+	
+	%----------------------------------------------------------------------
+	\subsection{The {\normalfont\texttt{\_O\_ER}} Problem}
+	%----------------------------------------------------------------------
+	
+	The persistent six-guess words \texttt{hover} and \texttt{joker} both traverse the \texttt{\_O\_ER} cluster.  After three guesses (\texttt{salet}$\to$\texttt{nidor}$\to$\texttt{wimpy}), the remaining set contains 7--8 words sharing the \texttt{\_O\_ER} skeleton.  With $P_{\max} = 11$ for the full 25-word cluster, no single guess can resolve the sub-cluster either.
+	
+	Selby's optimal solver avoids this by committing Guess-2 resources to pre-fracture the \texttt{\_O\_ER} family---choosing a Guess-2 word that may be suboptimal for the current partition but prevents the downstream trap.  This anticipatory play requires full-depth search and is structurally unavailable to greedy algorithms.
+	
+	%==============================================================================
+	\section{Discussion}
+	%==============================================================================
+	
+	%----------------------------------------------------------------------
+	\subsection{Source of the Gap}
+	%----------------------------------------------------------------------
+	
+	The gap between the simplest greedy solver and the global optimum decomposes into three distinct components:
+	
+	\begin{itemize}[nosep]
+		\item \textbf{5~guesses} from the global tiebreaker staircase ($7{,}930 \to 7{,}925$), closed by the adaptive regime split.
+		\item \textbf{4~guesses} from suboptimal Guess-2 tiebreaking at exactly 2 of 114 \texttt{SALET}-response states ($7{,}925 \to 7{,}921$), arising from two structurally different mechanisms: a solvability/stubbornness tradeoff at $|R| = 221$ and a singleton-yield effect at $|R| = 42$.  Closed by exact DP or sparse specialization.
+		\item \textbf{1~guess} from the top-bucket restriction itself ($7{,}921 \to 7{,}920$), requiring anti-greedy sacrifice outside $\mathcal{T}(R)$.
+	\end{itemize}
+	
+	The 4-guess gap between 7,925 and 7,921 is not a diffuse failure of the whole policy.  It is concentrated in two early-game states where the baseline tiebreaker makes a locally reasonable but globally suboptimal choice.  Neither correction is captured by simple trap-risk summaries.
+	
+	%----------------------------------------------------------------------
+	\subsection{Why Greedy Works So Well}
+	%----------------------------------------------------------------------
+	
+	Three factors explain the near-optimality of greedy play:
+	
+	\paragraph{1.\ The answer-set preference is essentially free.}
+	Within the 7,925 architecture, no quality-gap-based suspension of the R-preference changes any decision.  The best $R$-candidate in $\mathcal{T}(R)$ is never meaningfully worse than the best overall candidate.  This provides a qualitatively different benefit---nonzero probability of immediate termination---at zero detectable partition-quality cost.  The preference accounts for 386 of 391 total guesses saved from the simplest baseline (98.7\%), and its marginal cost within the refined architecture is only 13~guesses.
+	
+	\paragraph{2.\ The action space is coarse.}
+	With at most 243 possible patterns, the scoring landscape is coarse enough that the top-bucket class typically contains or nearly contains the globally optimal action.  The DP result proves this: restricting to $\mathcal{T}(R)$ costs only 1~guess.
+	
+	\paragraph{3.\ The English answer set is self-consistent.}
+	The 0.899 average self-differentiation ratio means answer words can largely distinguish each other without external help.  This makes the R-preference cheap (small partition-quality sacrifice) and lookahead unnecessary (the current candidate pool already provides most of the discrimination the full dictionary offers).  The self-consistency is a consequence of English phonotactics: the words \texttt{AROSE} and \texttt{UNLIT} together test ten letters \{A,E,I,L,N,O,R,S,T,U\}, and among 2,315 answer words, exactly one---\texttt{PYGMY}---contains none of them.
+	
+	%----------------------------------------------------------------------
+	\subsection{Why Complexity Fails}
+	%----------------------------------------------------------------------
+	
+	The failure of lookahead, entropy, and cluster-aware scoring as global modifications has distinct causes:
+	
+	\textbf{Entropy} is nearly neutral in the clean tiebreaking regime (2.7\% disagreement rate) but specifically harmful in the clustered regime (20.5\%), where it prefers balanced partitions over $b_2$-minimizing ones.  The regime split absorbs entropy's useful signal perfectly.
+	
+	\textbf{Lookahead} triggers score saturation (Theorem~\ref{thm:saturation}): the large guess dictionary provides differentiators for virtually any small bucket, so the lookahead score becomes constant across candidates.
+	
+	\textbf{Cluster-aware scoring} as a global modifier hurts because it overrides the pattern-count primary scoring.  The 7,925 algorithm's cluster detection succeeds precisely because it operates \emph{within} $\mathcal{T}(R)$ as a tiebreaker selector, not as a scoring modifier.
+	
+	\textbf{Depth conditioning} adds nothing: the $|R|$+cluster regime split already captures the full depth structure, with zero live tiebreak decisions at Guess-$4{+}$.
+	
+	\textbf{Higher-order bucket metrics} ($b_3$) create genuine ranking disagreements at 149 of 884 decision points but are uncorrelated with game outcome.
+	
+	\textbf{Generalized cluster detection} finds real non-suffix undifferentiable structure but does not improve decisions---the suffix detector's ``false positives'' accidentally produce correct routing.
+	
+	\textbf{Targeted early-state specialization} is the only form of additional complexity that succeeds---but it operates at just 2 of 114 Guess-2 states with narrow, potentially overfit thresholds.  The boundary of greedy optimality is sparse and state-specific, not addressable by global policy modifications.
+	
+	%----------------------------------------------------------------------
+	\subsection{Relationship to Information Theory}
+	%----------------------------------------------------------------------
+	
+	Sanderson \cite{sanderson2022a} frames Wordle as information-theoretic optimization.  Our results suggest this framing is suboptimal for greedy architectures.  The variable hierarchy analysis shows that entropy belongs to the same metric cluster as pattern count and provides no independent tiebreaking signal.  Within $\mathcal{T}(R)$, entropy is nearly identical to expected bucket size in the clean regime and actively harmful in the clustered regime.  The actionable dimensions are the partition tail ($b_2$) and the morphological cluster structure---neither of which has a natural information-theoretic interpretation.
+	
+	%----------------------------------------------------------------------
+	\subsection{Limitations}
+	%----------------------------------------------------------------------
+	
+	\begin{enumerate}[nosep]
+		\item \textbf{In-sample optimization.}  All refinements were tuned on the evaluation word list.  The 7,925 algorithm has broad plateaus; the 7,921 Guess-2 specialization has narrow thresholds and should be treated as exploratory.
+		\item \textbf{Original word list only.}  Results may not transfer to expanded or foreign-language lists.
+		\item \textbf{Answer-set knowledge required.}
+		\item \textbf{No hard-mode analysis.}
+		\item \textbf{Partition ceilings are computational}, not derived from first principles.
+		\item \textbf{Self-differentiation data} was measured under the baseline (7,930) trajectory; the 7,925 solver traverses slightly different states.
+		\item \textbf{The 7,921 heuristic} matches the DP total but not the DP policy---it achieves a slightly different guess-count distribution.
+	\end{enumerate}
+	
+	%----------------------------------------------------------------------
+	\subsection{Future Work}
+	%----------------------------------------------------------------------
+	
+	\begin{itemize}[nosep]
+		\item Systematic opener search over all $g \in G$.
+		\item Characterizing the anti-greedy sacrifice structure: the structural features of the 8 subtrees where a 1-bucket sacrifice is beneficial.
+		\item Whether the two-failure-mode decomposition (solvability/stubbornness vs.\ singleton yield) generalizes to other word lists or is specific to this answer set.
+		\item Testing whether the variable hierarchy finding (latent metric families, independent tail dimension) generalizes to Mastermind, Jotto, and other constrained sequential decision problems.
+		\item Hard-mode variant.
+		\item Generalization to expanded word lists and other languages.
+	\end{itemize}
+	
+	%==============================================================================
+	\section{Conclusion}
+	%==============================================================================
+	
+	We systematically explored the space of greedy heuristics for Wordle and found that it has specific, low-dimensional structure.  The simplest greedy solver (pattern-count maximization $+$ answer-set preference $+$ worst-bucket tiebreak) achieves 7,930 total guesses, 10 above optimal.  A variable hierarchy analysis reveals that dozens of natural tiebreaker metrics collapse into two latent families, with the second-largest bucket as the actionable independent dimension.  Exploiting this structure with a minimal adaptive regime yields 7,925 total guesses, 5 above optimal.
+	
+	The answer-set preference accounts for 386 of 391 guesses saved between the weakest and strongest greedy solver (98.7\%), though its marginal cost within the refined architecture is only 13~guesses---and within $\mathcal{T}(R)$, it imposes no detectable partition-quality cost.  Every tested modification to the global stationary scoring architecture---lookahead at any depth, Shannon entropy, cluster-aware scoring as a modifier, depth conditioning, higher-order bucket metrics---degrades performance.
+	
+	The remaining gap decomposes precisely.  The entire 4-guess distance from 7,925 to the restricted-DP optimum of 7,921 is concentrated in exactly two early-game states, arising from two distinct mechanisms: a solvability/stubbornness tradeoff at $|R| = 221$ and a singleton-yield effect at $|R| = 42$.  The final 1-guess gap to Selby's 7,920 requires anti-greedy sacrifice---choosing immediate partition-quality loss for downstream gain---a structural limitation of any algorithm that respects the top-bucket restriction.
+	
+	The complete stationary algorithm fits in four sentences and runs in under a minute.  It requires no search, no entropy, no lookahead, and no word-frequency models.  Its near-optimality reflects not the cleverness of the heuristic but the self-consistent structure of the English answer set, which naturally supports greedy discrimination.
+	
+	%==============================================================================
+	\section*{Acknowledgments}
+	%==============================================================================
+	
+	The author thanks Alex Selby for publishing optimal decision trees and word lists.
+	
+	%==============================================================================
+	\begin{thebibliography}{9}
+		
+		\bibitem{knuth1977}
+		Knuth, D.~E. (1977).
+		The computer as Master Mind.
+		\textit{Journal of Recreational Mathematics}, 9(1):1--6.
+		
+		\bibitem{olson2022}
+		Olson, J. (2022).
+		Wordle solver: Optimal strategies and decision trees.
+		\url{https://jonathanolson.net/wordle-solver/}
+		
+		\bibitem{renyi1961}
+		R\'enyi, A. (1961).
+		On measures of entropy and information.
+		\textit{Proc.\ 4th Berkeley Symp.\ Math.\ Stat.\ Prob.}, 1:547--561.
+		
+		\bibitem{sanderson2022a}
+		Sanderson, G. (2022a).
+		Solving Wordle using information theory.
+		3Blue1Brown.
+		\url{https://www.youtube.com/watch?v=v68zYyaEmEA}
+		
+		\bibitem{sanderson2022b}
+		Sanderson, G. (2022b).
+		Oh wait, actually the best Wordle opener is not ``crane''\ldots\ 3Blue1Brown.
+		\url{https://www.youtube.com/watch?v=fRed0Xmc2Wg}
+		
+		\bibitem{selby2022}
+		Selby, A. (2022).
+		Optimal Wordle solver.
+		\url{https://github.com/alex1770/wordle}
+		
+		\bibitem{shannon1948}
+		Shannon, C.~E. (1948).
+		A mathematical theory of communication.
+		\textit{Bell System Technical Journal}, 27(3):379--423.
+		
+		\bibitem{wardle2021}
+		Wardle, J. (2021--2022).
+		Wordle.
+		\url{https://www.nytimes.com/games/wordle}
+		
+	\end{thebibliography}
+	
+	%==============================================================================
+	\appendix
+	%==============================================================================
+	
+	\section{Partition Maps for Key Clusters}
+	
+	\textbf{\texttt{\_O\_ER} (25 words): Best guess \texttt{SCOWL}, $P_{\max} = 11$}
+	
+	\begin{verbatim}
+		..Y..: boxer, foyer, goner, homer, hover, joker,
+		mover, poker, roger, rover, voter          [11]
+		..YY.: mower, power, rower, tower                 [4]
+		.YY..: corer, cover                                [2]
+		.YYY.: cower                                       [1]
+		Y.Y.Y: loser                                       [1]
+		..Y.Y: lover                                       [1]
+		..YYY: lower                                       [1]
+		Y.Y..: poser                                       [1]
+		G.Y..: sober                                       [1]
+		G.YY.: sower                                       [1]
+		..GY.: wooer                                       [1]
+	\end{verbatim}
+	
+	\textbf{\texttt{\_OUND} (8 words): Best guess \texttt{BRASH}, $P_{\max} = 5$}
+	
+	\begin{verbatim}
+		.....: found, mound, pound, wound                 [4]
+		G....: bound                                       [1]
+		....Y: hound                                       [1]
+		.Y...: round                                       [1]
+		...Y.: sound                                       [1]
+	\end{verbatim}
+	
+	\section{Six-Guess Paths Across Variants}
+	
+	\begin{table}[h]
+		\centering
+		\begin{tabular}{@{}lll@{}}
+			\toprule
+			Variant & Word & Path \\
+			\midrule
+			7,930/29 & \texttt{hover} & \texttt{salet}$\to$\texttt{nidor}$\to$\texttt{womby}$\to$\texttt{rover}$\to$\texttt{cover}$\to$\texttt{hover} \\
+			7,930/29 & \texttt{poker} & \texttt{salet}$\to$\texttt{nidor}$\to$\texttt{womby}$\to$\texttt{rover}$\to$\texttt{joker}$\to$\texttt{poker} \\
+			\midrule
+			7,928--25 & \texttt{hover} & \texttt{salet}$\to$\texttt{nidor}$\to$\texttt{wimpy}$\to$\texttt{rover}$\to$\texttt{cover}$\to$\texttt{hover} \\
+			7,928--25 & \texttt{joker} & \texttt{salet}$\to$\texttt{nidor}$\to$\texttt{wimpy}$\to$\texttt{rover}$\to$\texttt{boxer}$\to$\texttt{joker} \\
+			\midrule
+			7,921 & \texttt{hover} & \texttt{salet}$\to$\texttt{nidor}$\to$\texttt{wimpy}$\to$\texttt{rover}$\to$\texttt{cover}$\to$\texttt{hover} \\
+			7,921 & \texttt{joker} & \texttt{salet}$\to$\texttt{nidor}$\to$\texttt{wimpy}$\to$\texttt{rover}$\to$\texttt{boxer}$\to$\texttt{joker} \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	The Guess-3 word shifts from \texttt{womby} to \texttt{wimpy} at the 7,928 boundary, and the second six-guess word shifts from \texttt{poker} to \texttt{joker}, both consequences of the second-worst cascade selecting a different tiebreak winner.
+	
+\end{document}
